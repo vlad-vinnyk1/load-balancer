@@ -7,24 +7,15 @@ import akka.stream.scaladsl.{Balance, Flow, GraphDSL, Keep, Merge, Sink, Source}
 import akka.stream.{FlowShape, OverflowStrategy}
 import com.company.akka.AkkaContext
 import com.company.logger.Logger
-import com.typesafe.config.ConfigFactory
 
-import scala.collection.JavaConverters._
-import scala.concurrent.Promise
+import scala.concurrent.{Future, Promise}
 import scala.util.{Failure, Success}
 
-case class LoadBalancer() extends AkkaContext with Logger {
-  private val routeRegistryConfig = ConfigFactory.load.getConfig("load-balancer.route-registry")
-  private val fortuneConfig = routeRegistryConfig.getConfig("get-fortune")
-
-  private val ports = fortuneConfig.getIntList("ports").asScala.toList
-  private val host = fortuneConfig.getString("host")
-  private val bufferSize = routeRegistryConfig.getInt("buffer-size")
-
+case class AkkaLoadBalancer(ports: List[Integer], host: String, bufferSize: Int) extends AkkaContext with Logger {
   private val poolFlows = ports.map(port => Http().cachedHostConnectionPool[Promise[HttpResponse]](host = host, port = port))
   private val loadBalancerFlow = balancer(poolFlows)
 
-  val queue = Source.queue[(HttpRequest, Promise[HttpResponse])](bufferSize, OverflowStrategy.backpressure)
+  private val queue = Source.queue[(HttpRequest, Promise[HttpResponse])](bufferSize, OverflowStrategy.backpressure)
     .via(loadBalancerFlow)
     .toMat(Sink.foreach({
       case (Success(resp), p) => p.success(resp)
@@ -45,5 +36,10 @@ case class LoadBalancer() extends AkkaContext with Logger {
 
       FlowShape(balancer.in, merge.out)
     })
+  }
+
+  def getFortune(rq: (HttpRequest, Promise[HttpResponse])): Future[HttpResponse] = {
+    queue.offer(rq)
+    rq._2.future
   }
 }
